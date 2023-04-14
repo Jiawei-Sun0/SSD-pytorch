@@ -3,6 +3,7 @@ import os
 import logging
 import sys
 import itertools
+from matplotlib import pyplot as plt
 
 import torch
 from torch.utils.data import DataLoader, ConcatDataset
@@ -23,6 +24,11 @@ from vision.ssd.config import vgg_ssd_config
 from vision.ssd.config import mobilenetv1_ssd_config
 from vision.ssd.config import squeezenet_ssd_config
 from vision.ssd.data_preprocessing import TrainAugmentation, TestTransform
+
+epochlist = []
+loss_list = []
+reg_loss_list = []
+cls_loss_list = []
 
 parser = argparse.ArgumentParser(
     description='Single Shot MultiBox Detector Training With Pytorch')
@@ -107,6 +113,38 @@ if args.use_cuda and torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
     logging.info("Use Cuda.")
 
+def group_annotation_by_class(dataset):
+    true_case_stat = {}
+    all_gt_boxes = {}
+    all_difficult_cases = {}
+    for i in range(len(dataset)):
+        image_id, annotation = dataset.get_annotation(i)
+        gt_boxes, classes, is_difficult = annotation
+        gt_boxes = torch.from_numpy(gt_boxes)
+        for i, difficult in enumerate(is_difficult):
+            class_index = int(classes[i])
+            gt_box = gt_boxes[i]
+            if not difficult:
+                true_case_stat[class_index] = true_case_stat.get(class_index, 0) + 1
+
+            if class_index not in all_gt_boxes:
+                all_gt_boxes[class_index] = {}
+            if image_id not in all_gt_boxes[class_index]:
+                all_gt_boxes[class_index][image_id] = []
+            all_gt_boxes[class_index][image_id].append(gt_box)
+            if class_index not in all_difficult_cases:
+                all_difficult_cases[class_index]={}
+            if image_id not in all_difficult_cases[class_index]:
+                all_difficult_cases[class_index][image_id] = []
+            all_difficult_cases[class_index][image_id].append(difficult)
+
+    for class_index in all_gt_boxes:
+        for image_id in all_gt_boxes[class_index]:
+            all_gt_boxes[class_index][image_id] = torch.stack(all_gt_boxes[class_index][image_id])
+    for class_index in all_difficult_cases:
+        for image_id in all_difficult_cases[class_index]:
+            all_gt_boxes[class_index][image_id] = torch.tensor(all_gt_boxes[class_index][image_id])
+    return true_case_stat, all_gt_boxes, all_difficult_cases
 
 def train(loader, net, criterion, optimizer, device, debug_steps=100, epoch=-1):
     net.train(True)
@@ -129,6 +167,7 @@ def train(loader, net, criterion, optimizer, device, debug_steps=100, epoch=-1):
         running_loss += loss.item()
         running_regression_loss += regression_loss.item()
         running_classification_loss += classification_loss.item()
+        
         if i and i % debug_steps == 0:
             avg_loss = running_loss / debug_steps
             avg_reg_loss = running_regression_loss / debug_steps
@@ -139,6 +178,9 @@ def train(loader, net, criterion, optimizer, device, debug_steps=100, epoch=-1):
                 f"Average Regression Loss {avg_reg_loss:.4f}, " +
                 f"Average Classification Loss: {avg_clf_loss:.4f}"
             )
+            loss_list.append(avg_loss)
+            reg_loss_list.append(avg_reg_loss)
+            cls_loss_list.append(avg_clf_loss)
             running_loss = 0.0
             running_regression_loss = 0.0
             running_classification_loss = 0.0
@@ -209,6 +251,8 @@ if __name__ == '__main__':
         if args.dataset_type == 'voc':
             dataset = VOCDataset(dataset_path, transform=train_transform,
                                  target_transform=target_transform)
+            
+            true_case_stat, all_gb_boxes, all_difficult_cases = group_annotation_by_class(dataset)
             label_file = os.path.join(args.checkpoint_folder, "voc-model-labels.txt")
             store_labels(label_file, dataset.class_names)
             num_classes = len(dataset.class_names)
@@ -224,12 +268,13 @@ if __name__ == '__main__':
         else:
             raise ValueError(f"Dataset type {args.dataset_type} is not supported.")
         datasets.append(dataset)
+    
     logging.info(f"Stored labels into file {label_file}.")
     train_dataset = ConcatDataset(datasets)
     logging.info("Train dataset size: {}".format(len(train_dataset)))
     train_loader = DataLoader(train_dataset, args.batch_size,
                               num_workers=args.num_workers,
-                              shuffle=True)
+                              shuffle=True,drop_last=True)
     logging.info("Prepare Validation datasets.")
     if args.dataset_type == "voc":
         val_dataset = VOCDataset(args.validation_dataset, transform=test_transform,
@@ -319,8 +364,10 @@ if __name__ == '__main__':
         parser.print_help(sys.stderr)
         sys.exit(1)
 
+    
     logging.info(f"Start training from epoch {last_epoch + 1}.")
     for epoch in range(last_epoch + 1, args.num_epochs):
+        epochlist.append(epoch)
         train(train_loader, net, criterion, optimizer,
               device=DEVICE, debug_steps=args.debug_steps, epoch=epoch)
         scheduler.step()
@@ -336,3 +383,16 @@ if __name__ == '__main__':
             model_path = os.path.join(args.checkpoint_folder, f"{args.net}-Epoch-{epoch}-Loss-{val_loss}.pth")
             net.save(model_path)
             logging.info(f"Saved model {model_path}")
+    plt.figure(1)
+    plt.subplot(221)
+    plt.title("loss")
+    plt.plot(epochlist,loss_list)
+    plt.subplot(222)
+    plt.title("regression loss")
+    plt.plot(epochlist,reg_loss_list)
+    plt.subplot(223)
+    plt.title("classification loss")
+    plt.plot(epochlist,cls_loss_list)
+    plt.savefig("loss_graph.jpg")
+    print("Figure saved.")
+    
