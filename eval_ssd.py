@@ -12,6 +12,7 @@ import pathlib
 import numpy as np
 import logging
 import sys
+import cv2
 from vision.ssd.mobilenet_v2_ssd_lite import create_mobilenetv2_ssd_lite, create_mobilenetv2_ssd_lite_predictor
 from vision.ssd.mobilenetv3_ssd_lite import create_mobilenetv3_large_ssd_lite, create_mobilenetv3_small_ssd_lite
 
@@ -32,6 +33,7 @@ parser.add_argument("--iou_threshold", type=float, default=0.5, help="The thresh
 parser.add_argument("--eval_dir", default="eval_results", type=str, help="The directory to store evaluation results.")
 parser.add_argument('--mb2_width_mult', default=1.0, type=float,
                     help='Width Multiplifier for MobilenetV2')
+parser.add_argument("--output_img", action="store_true", help="Output the evaluation images.")
 args = parser.parse_args()
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() and args.use_cuda else "cpu")
 
@@ -69,6 +71,25 @@ def group_annotation_by_class(dataset):
             all_gt_boxes[class_index][image_id] = torch.tensor(all_gt_boxes[class_index][image_id])
     return true_case_stat, all_gt_boxes, all_difficult_cases
 
+def save_output_img(image_id,box,gt_box,flag):
+    imagepath = args.dataset + "/JPEGImages/" + image_id +".jpg"
+    ious = box_utils.iou_of(box, gt_box)
+    max_iou = torch.max(ious).item()
+    img = cv2.imread(imagepath)
+    cv2.rectangle(img, (int(box[0][0]), int(box[0][1])),
+        (int(box[0][2]), int(box[0][3].item())), (55, 255, 155), 5)
+    cv2.rectangle(img, (int(gt_box[0][0]), int(gt_box[0][1])),
+        (int(gt_box[0][2]), int(gt_box[0][3].item())), (255, 0, 0), 5)
+    cv2.putText(img, class_name,
+        (int(box[0][0].item()) + 20, int(box[0][1].item()) + 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,  # font scale
+        (255, 255, 255),
+        2)  # line type
+    if not flag:
+        cv2.putText(img, "False iou:{}".format(round(max_iou,5)),(20,40),cv2.FONT_HERSHEY_SIMPLEX,1, (0, 0, 255),2)
+        image_id = image_id + "_False"
+    cv2.imwrite("/home/sunjiawei/Workshop/pytorch-ssd-qfgaohao/Visualization/{}_eval.jpg".format(image_id), img)
 
 def compute_average_precision_per_class(num_true_cases, gt_boxes, difficult_cases,
                                         prediction_file, iou_threshold, use_2007_metric):
@@ -76,6 +97,7 @@ def compute_average_precision_per_class(num_true_cases, gt_boxes, difficult_case
         image_ids = []
         boxes = []
         scores = []
+        count = 0
         for line in f:
             t = line.rstrip().split(" ")
             image_ids.append(t[0])
@@ -105,15 +127,44 @@ def compute_average_precision_per_class(num_true_cases, gt_boxes, difficult_case
                     if (image_id, max_arg) not in matched:
                         true_positive[i] = 1
                         matched.add((image_id, max_arg))
+                        
+                        if args.output_img:
+                            save_output_img(image_id,box,gt_box,True)
                     else:
                         false_positive[i] = 1
             else:
                 false_positive[i] = 1
+        
+        if args.output_img:
+            pre = list(matched)
+            pre = [e[0] for e in pre]
+            diff = []
+            for image_id in gt_boxes:
+                if image_id not in pre:
+                    diff.append(image_id)
+            print(f"diff:{len(diff)}")
+            for id in diff:
+                box = boxes[image_ids.index(id)]
+                gt_box = gt_boxes[id]
+                save_output_img(id,box,gt_box,False)
 
+            # found = [] # another way to output false images.
+            # for i, image_id in enumerate(image_ids):
+            #     if image_id in diff and image_id not in found:
+            #         box = boxes[i]
+            #         gt_box = gt_boxes[image_id]
+            #         ious = box_utils.iou_of(box, gt_box)
+            #         max_iou = torch.max(ious).item()
+            #         save_output_img(image_id,box,gt_box,False)
+            #         found.append(image_id)
+            #     else:
+            #         continue
+            
     true_positive = true_positive.cumsum()
     false_positive = false_positive.cumsum()
     precision = true_positive / (true_positive + false_positive)
     recall = true_positive / num_true_cases
+    print(f"T:{true_positive.max()}--F:{false_positive.max()}        number of ture cases:{num_true_cases}")
     if use_2007_metric:
         return measurements.compute_voc2007_average_precision(precision, recall)
     else:

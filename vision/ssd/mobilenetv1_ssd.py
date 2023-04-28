@@ -11,6 +11,7 @@ def create_mobilenetv1_ssd(num_classes, is_test=False):
     base_net = MobileNetV1(1001).model  # disable dropout layer
 
     source_layer_indexes = [
+        6, # ADDED PART
         12,
         14,
     ]
@@ -42,6 +43,7 @@ def create_mobilenetv1_ssd(num_classes, is_test=False):
     ])
 
     regression_headers = ModuleList([
+        Conv2d(in_channels=256, out_channels=6 * 4, kernel_size=3, padding=1), # ADDED PART
         Conv2d(in_channels=512, out_channels=6 * 4, kernel_size=3, padding=1),
         Conv2d(in_channels=1024, out_channels=6 * 4, kernel_size=3, padding=1),
         Conv2d(in_channels=512, out_channels=6 * 4, kernel_size=3, padding=1),
@@ -51,6 +53,7 @@ def create_mobilenetv1_ssd(num_classes, is_test=False):
     ])
 
     classification_headers = ModuleList([
+        Conv2d(in_channels=256, out_channels=6 * num_classes, kernel_size=3, padding=1), # ADDED PART
         Conv2d(in_channels=512, out_channels=6 * num_classes, kernel_size=3, padding=1),
         Conv2d(in_channels=1024, out_channels=6 * num_classes, kernel_size=3, padding=1),
         Conv2d(in_channels=512, out_channels=6 * num_classes, kernel_size=3, padding=1),

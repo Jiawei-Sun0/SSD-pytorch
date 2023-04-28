@@ -3,6 +3,8 @@ import os
 import logging
 import sys
 import itertools
+import random
+import time
 from matplotlib import pyplot as plt
 
 import torch
@@ -102,6 +104,9 @@ parser.add_argument('--use_cuda', default=True, type=str2bool,
 
 parser.add_argument('--checkpoint_folder', default='models/',
                     help='Directory for saving checkpoint models')
+parser.add_argument('--random', action='store_true',
+                    help='use random training parameters.')
+
 
 
 logging.basicConfig(stream=sys.stdout, level=logging.INFO,
@@ -113,38 +118,6 @@ if args.use_cuda and torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
     logging.info("Use Cuda.")
 
-def group_annotation_by_class(dataset):
-    true_case_stat = {}
-    all_gt_boxes = {}
-    all_difficult_cases = {}
-    for i in range(len(dataset)):
-        image_id, annotation = dataset.get_annotation(i)
-        gt_boxes, classes, is_difficult = annotation
-        gt_boxes = torch.from_numpy(gt_boxes)
-        for i, difficult in enumerate(is_difficult):
-            class_index = int(classes[i])
-            gt_box = gt_boxes[i]
-            if not difficult:
-                true_case_stat[class_index] = true_case_stat.get(class_index, 0) + 1
-
-            if class_index not in all_gt_boxes:
-                all_gt_boxes[class_index] = {}
-            if image_id not in all_gt_boxes[class_index]:
-                all_gt_boxes[class_index][image_id] = []
-            all_gt_boxes[class_index][image_id].append(gt_box)
-            if class_index not in all_difficult_cases:
-                all_difficult_cases[class_index]={}
-            if image_id not in all_difficult_cases[class_index]:
-                all_difficult_cases[class_index][image_id] = []
-            all_difficult_cases[class_index][image_id].append(difficult)
-
-    for class_index in all_gt_boxes:
-        for image_id in all_gt_boxes[class_index]:
-            all_gt_boxes[class_index][image_id] = torch.stack(all_gt_boxes[class_index][image_id])
-    for class_index in all_difficult_cases:
-        for image_id in all_difficult_cases[class_index]:
-            all_gt_boxes[class_index][image_id] = torch.tensor(all_gt_boxes[class_index][image_id])
-    return true_case_stat, all_gt_boxes, all_difficult_cases
 
 def train(loader, net, criterion, optimizer, device, debug_steps=100, epoch=-1):
     net.train(True)
@@ -167,8 +140,8 @@ def train(loader, net, criterion, optimizer, device, debug_steps=100, epoch=-1):
         running_loss += loss.item()
         running_regression_loss += regression_loss.item()
         running_classification_loss += classification_loss.item()
-        
-        if i and i % debug_steps == 0:
+        # if i and i % debug_steps == 0:
+        if (int)(loader.dataset.cumulative_sizes[0]/loader.batch_size) - 1 == i:
             avg_loss = running_loss / debug_steps
             avg_reg_loss = running_regression_loss / debug_steps
             avg_clf_loss = running_classification_loss / debug_steps
@@ -183,7 +156,7 @@ def train(loader, net, criterion, optimizer, device, debug_steps=100, epoch=-1):
             cls_loss_list.append(avg_clf_loss)
             running_loss = 0.0
             running_regression_loss = 0.0
-            running_classification_loss = 0.0
+            running_classification_loss = 0.0 
 
 
 def test(loader, net, criterion, device):
@@ -212,7 +185,12 @@ def test(loader, net, criterion, device):
 
 if __name__ == '__main__':
     timer = Timer()
-
+    if args.random:
+        random.seed(time.time())
+        args.lr = 10**random.randint(-6,-1)
+        args.base_net_lr = 10**random.randint(-6,-1)
+        args.batch_size = 2**random.randint(2,5)
+    
     logging.info(args)
     if args.net == 'vgg16-ssd':
         create_net = create_vgg_ssd
@@ -251,8 +229,6 @@ if __name__ == '__main__':
         if args.dataset_type == 'voc':
             dataset = VOCDataset(dataset_path, transform=train_transform,
                                  target_transform=target_transform)
-            
-            true_case_stat, all_gb_boxes, all_difficult_cases = group_annotation_by_class(dataset)
             label_file = os.path.join(args.checkpoint_folder, "voc-model-labels.txt")
             store_labels(label_file, dataset.class_names)
             num_classes = len(dataset.class_names)
@@ -380,19 +356,20 @@ if __name__ == '__main__':
                 f"Validation Regression Loss {val_regression_loss:.4f}, " +
                 f"Validation Classification Loss: {val_classification_loss:.4f}"
             )
-            model_path = os.path.join(args.checkpoint_folder, f"{args.net}-Epoch-{epoch}-Loss-{val_loss}.pth")
+            model_path = os.path.join(args.checkpoint_folder, f"{args.net}-Epoch-{epoch}-Loss-{round(val_loss,4)}_lr{args.lr}_blr{args.base_net_lr}_bs{args.batch_size}_img{config.image_size}.pth")
+            
             net.save(model_path)
             logging.info(f"Saved model {model_path}")
     plt.figure(1)
     plt.subplot(221)
-    plt.title("loss")
+    plt.title("loss",loc='right',fontsize=10)
     plt.plot(epochlist,loss_list)
     plt.subplot(222)
-    plt.title("regression loss")
+    plt.title("regression loss",loc='right',fontsize=10)
     plt.plot(epochlist,reg_loss_list)
     plt.subplot(223)
-    plt.title("classification loss")
+    plt.title("classification loss",loc='right',fontsize=10)
     plt.plot(epochlist,cls_loss_list)
-    plt.savefig("loss_graph.jpg")
+    plt.savefig("eval_results/loss_graph.jpg")
     print("Figure saved.")
     
